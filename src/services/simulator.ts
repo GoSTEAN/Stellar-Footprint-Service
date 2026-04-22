@@ -90,12 +90,13 @@ async function fetchTtlInfo(
 export async function simulateTransaction(
   xdr: string,
   network: Network = "testnet",
+  signal?: AbortSignal,
 ): Promise<SimulateResult> {
   const server = getRpcServer(network);
   const { networkPassphrase } = getNetworkConfig(network);
 
   const tx = StellarSdk.TransactionBuilder.fromXDR(xdr, networkPassphrase);
-  const response = await server.simulateTransaction(tx);
+  const response = await server.simulateTransaction(tx, { signal } as never);
 
   if (StellarSdk.SorobanRpc.Api.isSimulationError(response)) {
     return { success: false, error: response.error, raw: response };
