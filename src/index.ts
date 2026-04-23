@@ -1,5 +1,6 @@
 import express from "express";
 import compression from "compression";
+import helmet from "helmet";
 import dotenv from "dotenv";
 import routes from "./api/routes";
 import { metricsMiddleware, metrics } from "./middleware/metrics";
@@ -7,6 +8,9 @@ import { timeoutMiddleware } from "./middleware/timeout";
 import { ipFilterMiddleware } from "./middleware/ipFilter";
 import { requestLogger } from "./middleware/requestLogger";
 import { bruteForceMiddleware } from "./middleware/bruteForce";
+import { errorHandler } from "./middleware/errorHandler";
+import { rpcCircuitBreaker } from "./utils/circuitBreaker";
+import { logger } from "./utils/logger";
 
 dotenv.config();
 
@@ -18,6 +22,16 @@ const COMPRESSION_THRESHOLD = parseInt(
 );
 
 // Middleware
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+  }),
+);
 app.use(compression({ threshold: COMPRESSION_THRESHOLD }));
 app.use(express.json());
 app.use(ipFilterMiddleware);
@@ -42,16 +56,36 @@ app.get("/metrics", async (req, res) => {
   try {
     res.set("Content-Type", "text/plain");
     res.end(await metrics.getMetrics());
-  } catch (error) {
-    res.status(500).end(error);
+  } catch (error: unknown) {
+    res.status(500).end(error instanceof Error ? error.message : String(error));
   }
 });
 
-// API routes
-app.use("/api", routes);
+// API v1 routes
+app.use("/api/v1", routes);
 
-app.listen(PORT, () => {
-  console.warn(`stellar-footprint-service running on port ${PORT}`);
+// Backward-compat: redirect /api/* → /api/v1/*
+app.use("/api/:path(*)", (req, res) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const path = (req.params as any)["path"] || "";
+  res.redirect(
+    308,
+    `/api/v1/${path}${req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""}`,
+  );
 });
+
+// Error handling middleware (must be last)
+app.use(errorHandler);
+
+// Only start the server when this file is run directly (not imported in tests)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    logger.info("stellar-footprint-service started", {
+      port: PORT,
+      nodeVersion: process.version,
+      environment: process.env.NODE_ENV || "development",
+    });
+  });
+}
 
 export default app;
