@@ -5,6 +5,7 @@ import { Network } from "../config/stellar";
 import { footprintDiff } from "../services/footprintDiff";
 import metrics from "../middleware/metrics";
 import { validateXdr, type XdrInputType } from "../services/validator";
+import { buildRestoreTransaction } from "../services/restorer";
 
 export async function simulate(req: Request, res: Response): Promise<void> {
   const { xdr, network } = req.body as { xdr?: string; network?: Network };
@@ -51,6 +52,20 @@ export async function simulate(req: Request, res: Response): Promise<void> {
       res.status(422).json(result);
     }
   } catch (err: unknown) {
+    // Handle circuit breaker open state
+    if (
+      err instanceof Error &&
+      (err as { circuitOpen?: boolean }).circuitOpen
+    ) {
+      const retryAfter =
+        (err as unknown as { retryAfter: number }).retryAfter ?? 30;
+      res
+        .status(503)
+        .set("Retry-After", String(retryAfter))
+        .json({ error: "Service temporarily unavailable", retryAfter });
+      return;
+    }
+
     const message = err instanceof Error ? err.message : "Unexpected error";
 
     // Record failed simulation
@@ -63,7 +78,10 @@ export async function simulate(req: Request, res: Response): Promise<void> {
   }
 }
 
-export async function footprintDiffController(req: Request, res: Response): Promise<void> {
+export async function footprintDiffController(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const { before, after } = req.body as {
     before?: {
       footprint?: {
@@ -80,7 +98,9 @@ export async function footprintDiffController(req: Request, res: Response): Prom
   };
 
   if (!before || !after) {
-    res.status(400).json({ error: "Missing required fields: before and after" });
+    res
+      .status(400)
+      .json({ error: "Missing required fields: before and after" });
     return;
   }
 
@@ -119,10 +139,38 @@ export function validate(req: Request, res: Response): void {
   }
 
   if (type && type !== "transaction" && type !== "operation") {
-    res.status(400).json({ error: "Invalid type. Use 'transaction' or 'operation'" });
+    res
+      .status(400)
+      .json({ error: "Invalid type. Use 'transaction' or 'operation'" });
     return;
   }
 
   const result = validateXdr(xdr, (type as XdrInputType) ?? "transaction");
   res.status(result.valid ? 200 : 400).json(result);
+}
+
+export async function restore(req: Request, res: Response): Promise<void> {
+  const { xdr, network } = req.body as { xdr?: string; network?: Network };
+
+  if (!xdr) {
+    res.status(400).json({ error: "Missing required field: xdr" });
+    return;
+  }
+
+  if (network && network !== "mainnet" && network !== "testnet") {
+    res
+      .status(400)
+      .json({ error: "Invalid network. Use 'testnet' or 'mainnet'" });
+    return;
+  }
+
+  const net: Network = network === "mainnet" ? "mainnet" : "testnet";
+
+  try {
+    const result = await buildRestoreTransaction(xdr, net);
+    res.status(200).json(result);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unexpected error";
+    res.status(500).json({ error: message });
+  }
 }
