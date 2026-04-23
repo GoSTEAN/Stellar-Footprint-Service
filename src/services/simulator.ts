@@ -179,6 +179,10 @@ export async function simulateTransaction(
   // Fetch TTL information
   const ttl = await fetchTtlInfo(server, allXdrEntries);
 
+  // Extract required signers from auth entries
+  const auth = response.transactionData?.build().auth() ?? [];
+  const { requiredSigners, threshold } = extractRequiredSigners(auth);
+
   return {
     success: true,
     footprint: {
@@ -193,6 +197,8 @@ export async function simulateTransaction(
       cpuInsns: response.cost?.cpuInsns ?? "0",
       memBytes: response.cost?.memBytes ?? "0",
     },
+    requiredSigners,
+    threshold,
     raw: response,
   };
 }
